@@ -62,7 +62,10 @@ ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 ALPACA_PAPER = os.getenv("ALPACA_PAPER", "true").lower() in {"1","true","yes"}
 
-LEVERAGED_TICKERS = [s.strip().upper() for s in os.getenv("LEVERAGED_TICKERS", "TQQQ,SQQQ,SPXL,SPXS,SOXL,SOXS,FNGU,FNGD,LABU,LABD,RETL,RETD,NUGT,DUST,BOIL,KOLD,UVXY,VIXY,SVIX").split(",") if s.strip()]
+LEVERAGED_TICKERS = [s.strip().upper() for s in os.getenv(
+    "LEVERAGED_TICKERS",
+    "TQQQ,SQQQ,SPXL,SPXS,SOXL,SOXS,FNGU,FNGD,LABU,LABD,RETL,RETD,NUGT,DUST,BOIL,KOLD,UVXY,VIXY,SVIX"
+).split(",") if s.strip()]
 
 TIMEFRAME_MIN = int(os.getenv("TIMEFRAME_MIN", "15"))
 BREAKOUT_LOOKBACK = int(os.getenv("BREAKOUT_LOOKBACK", "20"))
@@ -98,21 +101,36 @@ trading = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=ALPACA_PAPER)
 print("[INFO] Using data feed: IEX")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Universe
+# Universe (GitHub source → fallback)
 # ──────────────────────────────────────────────────────────────────────────────
 FALLBACK_SP500 = ["AAPL","MSFT","AMZN","GOOGL","META","NVDA","JPM","AVGO","SPY"]
 
+GITHUB_SP500_URL = os.getenv(
+    "GITHUB_SP500_URL",
+    "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
+)
+
+def load_sp500_from_github() -> List[str]:
+    df = pd.read_csv(GITHUB_SP500_URL)
+    col = next(c for c in df.columns if str(c).strip().lower() in {"symbol", "ticker"})
+    syms = (
+        df[col]
+        .dropna()
+        .astype(str)
+        .str.upper()
+        .str.strip()
+        .str.replace(".", "-", regex=False)
+        .unique()
+        .tolist()
+    )
+    cleaned = [s for s in syms if len(s) >= 1 and all(ch.isalnum() or ch == "-" for ch in s)]
+    return sorted(cleaned)
+
 def load_sp500() -> List[str]:
     try:
-        tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
-        df = tables[0]
-        col = [c for c in df.columns if str(c).lower().startswith("symbol")][0]
-        syms = (
-            df[col].dropna().astype(str).str.upper().str.replace(".", "-", regex=False).unique().tolist()
-        )
-        return sorted(syms)
+        return load_sp500_from_github()
     except Exception as e:
-        print(f"[WARN] load_sp500 fell back to static list: {e}")
+        print(f"[WARN] load_sp500 GitHub failed: {e}. Falling back to static list.")
         return FALLBACK_SP500
 
 def full_universe() -> List[str]:
@@ -165,7 +183,6 @@ def to_df_from_response(resp, symbol: str) -> pd.DataFrame:
     return pd.DataFrame(columns=["t","o","h","l","c","v"])
 
 def fetch_bars(symbol: str, end: datetime) -> pd.DataFrame:
-    """Always query IEX feed to avoid SIP entitlement errors."""
     start = end - timedelta(days=LOOKBACK_DAYS_STOCK)
     req = StockBarsRequest(
         symbol_or_symbols=symbol,
@@ -173,7 +190,7 @@ def fetch_bars(symbol: str, end: datetime) -> pd.DataFrame:
         start=start,
         end=end,
         adjustment=Adjustment.SPLIT,
-        feed=DataFeed.IEX,               # ← always IEX
+        feed=DataFeed.IEX,
         limit=10000,
     )
     resp = stock_client.get_stock_bars(req)
@@ -199,7 +216,7 @@ def breakout_signal(df: pd.DataFrame) -> bool:
     return (c.iloc[-1] > hh) and runrate_volume_ok(v) and (rsi14 >= RSI_MIN)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Orders (10% BP; bracket TP/SL). Timeout handled by loop.
+# Orders
 # ──────────────────────────────────────────────────────────────────────────────
 def get_buying_power() -> float:
     acct = trading.get_account()
@@ -290,7 +307,6 @@ def scan_and_trade():
             print(f"[ERROR] {sym} scan/trade failed: {e}")
 
 def manage_positions():
-    # Check timeout condition; TP/SL managed server-side by bracket
     try:
         positions = {p.symbol: p for p in trading.get_all_positions()}
         for sym, meta in list(state["positions"].items()):
