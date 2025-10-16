@@ -95,6 +95,8 @@ if not (ALPACA_API_KEY and ALPACA_SECRET_KEY):
 stock_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 trading = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=ALPACA_PAPER)
 
+print("[INFO] Using data feed: IEX")
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Universe
 # ──────────────────────────────────────────────────────────────────────────────
@@ -152,7 +154,7 @@ def to_df_from_response(resp, symbol: str) -> pd.DataFrame:
         df = resp.df.copy()
         if "symbol" in df.index.names:
             try:
-                df = df.xs(symbol, level="symbol")
+                df = df.xs(symbol, level("symbol"))
             except Exception:
                 pass
         df = df.reset_index().rename(columns={
@@ -163,6 +165,7 @@ def to_df_from_response(resp, symbol: str) -> pd.DataFrame:
     return pd.DataFrame(columns=["t","o","h","l","c","v"])
 
 def fetch_bars(symbol: str, end: datetime) -> pd.DataFrame:
+    """Always query IEX feed to avoid SIP entitlement errors."""
     start = end - timedelta(days=LOOKBACK_DAYS_STOCK)
     req = StockBarsRequest(
         symbol_or_symbols=symbol,
@@ -170,7 +173,7 @@ def fetch_bars(symbol: str, end: datetime) -> pd.DataFrame:
         start=start,
         end=end,
         adjustment=Adjustment.SPLIT,
-        feed=DataFeed.IEX if ALPACA_PAPER else DataFeed.SIP,
+        feed=DataFeed.IEX,               # ← always IEX
         limit=10000,
     )
     resp = stock_client.get_stock_bars(req)
